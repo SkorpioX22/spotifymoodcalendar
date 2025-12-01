@@ -35,6 +35,7 @@
     .controls-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .small{font-size:12px;color:var(--muted)}
     .export-hint{margin-top:8px;color:var(--muted);font-size:12px}
+    pre.log{white-space:pre-wrap;color:var(--muted);font-size:12px}
   </style>
 </head>
 <body>
@@ -71,20 +72,30 @@
           <h3 style="margin:6px 0 6px 0;font-size:13px">Legend</h3>
           <div id="legend" class="legend"></div>
           <div class="export-hint">Tip: Click a colored day to see songs added that day.</div>
+          <h3 style="margin-top:12px;font-size:13px">Debug</h3>
+          <pre id="log" class="log"></pre>
         </div>
       </div>
 
     </div>
 
     <footer>
-      This single-file app uses Spotify PKCE flow (no client secret required). It runs entirely in your browser. For full stability, use a Spotify app with Redirect URI set to this page origin (e.g. http://localhost:5500) in the Spotify Developer Dashboard.
+      This single-file app uses Spotify PKCE flow (no client secret required). It runs entirely in your browser. Make sure the Redirect URI you registered in the Spotify Developer Dashboard matches exactly this page URL (including trailing slash):
+      <br><strong id="myRedirect"></strong>
     </footer>
   </div>
 
 <script>
+// ---------- Small improvements made:
+// 1) Batch artist genre requests using /artists?ids= to reduce calls and rate-limit problems
+// 2) Added robust error messages and console/log output
+// 3) Ensure scope includes user-library-read (required)
+// 4) Show progress and metadata clearly
+
 // ---------------- CONFIG ----------------
 const SCOPE = 'user-library-read';
 const PAGE_LIMIT = 50; // Spotify page size for saved tracks
+const ARTIST_BATCH_SIZE = 50; // /artists accepts up to 50 ids
 
 // ---------- PKCE helpers ----------
 function randStr(len=64){const pool='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';let s='';for(let i=0;i<len;i++)s+=pool[Math.floor(Math.random()*pool.length)];return s}
@@ -107,7 +118,6 @@ const GENRE_BUCKETS = {
 // generate color palette for buckets
 const BUCKETS = Object.keys(GENRE_BUCKETS);
 const BUCKET_COLORS = (function(){
-  // assign visually distinct hues (HSL) mapped to buckets
   const hues = [180,220,280,40,260,150,210,350,25,320];
   const out={}; BUCKETS.forEach((b,i)=> out[b]=`hsl(${hues[i%hues.length]} 85% 55%)`);
   return out;
@@ -117,7 +127,6 @@ const BUCKET_COLORS = (function(){
 let ACCESS_TOKEN = null;
 let EXPIRES_AT = 0;
 let PKCE_VERIFIER = null;
-let USER_SAVED_TRACKS = []; // {added_at, track}
 let ARTIST_GENRES_CACHE = {}; // artistId -> genres[]
 let DATE_GENRE_MAP = {}; // yyyy-mm-dd -> {counts: {bucket: n}, songs:[...]} 
 
@@ -133,14 +142,18 @@ const calendarEl = document.getElementById('calendar');
 const legendEl = document.getElementById('legend');
 const yearSelect = document.getElementById('yearSelect');
 const metaEl = document.getElementById('meta');
+const logEl = document.getElementById('log');
+const myRedirectEl = document.getElementById('myRedirect');
+
+myRedirectEl.textContent = window.location.origin + window.location.pathname;
 
 // ---------- Helpers ----------
-function setStatus(txt){statusEl.textContent = txt}
+function setStatus(txt){statusEl.textContent = txt; console.log(txt)}
 function showSpinner(on){spinner.style.display = on ? 'inline-block' : 'none'}
-function saveToSession(key,val){sessionStorage.setItem(key,JSON.stringify(val))}
-function loadFromSession(key){const v=sessionStorage.getItem(key);return v?JSON.parse(v):null}
+function log(msg){logEl.textContent = msg + '
+' + logEl.textContent}
 
-function bucketForGenres(genres){ // genres: array of strings
+function bucketForGenres(genres){
   if(!genres || !genres.length) return 'other';
   const g = genres.map(x=>x.toLowerCase());
   for(const bucket of BUCKETS){
@@ -149,14 +162,11 @@ function bucketForGenres(genres){ // genres: array of strings
       if(g.some(x=>x.includes(cand))) return bucket;
     }
   }
-  // fallback: try single word match
   for(const bucket of BUCKETS){
     if(g.some(x=>x.includes(bucket))) return bucket;
   }
   return 'other';
 }
-
-function formatDateYMD(dt){const y=dt.getFullYear();const m=('0'+(dt.getMonth()+1)).slice(-2);const d=('0'+dt.getDate()).slice(-2);return `${y}-${m}-${d}`}
 
 // ---------- OAuth flow (PKCE) ----------
 connectBtn.addEventListener('click', async ()=>{
@@ -174,6 +184,8 @@ connectBtn.addEventListener('click', async ()=>{
     code_challenge_method: 'S256',
     code_challenge: challenge
   });
+  // include show_dialog to force consent if you changed scopes
+  params.set('show_dialog','true');
   window.location = 'https://accounts.spotify.com/authorize?' + params.toString();
 });
 
@@ -184,10 +196,9 @@ async function handleRedirect(){
   const url = new URL(window.location.href);
   const code = url.searchParams.get('code');
   const error = url.searchParams.get('error');
-  if(error){setStatus('Auth error: '+error);return}
+  if(error){setStatus('Auth error: '+error);log('Auth error: '+error);return}
   if(!code) return;
-  setStatus('Finishing authentication...');
-  showSpinner(true);
+  setStatus('Finishing authentication...'); showSpinner(true);
   const verifier = sessionStorage.getItem('pkce_verifier');
   const clientId = sessionStorage.getItem('spotify_client_id');
   if(!verifier || !clientId){setStatus('Missing PKCE state. Start flow again.');showSpinner(false);return}
@@ -196,14 +207,14 @@ async function handleRedirect(){
   try{
     const resp = await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
     const j = await resp.json();
-    if(j.error){setStatus('Token error: '+(j.error_description||j.error));showSpinner(false);return}
+    if(j.error){setStatus('Token error: '+(j.error_description||j.error));log(JSON.stringify(j));showSpinner(false);return}
     ACCESS_TOKEN = j.access_token; EXPIRES_AT = Date.now() + (j.expires_in*1000);
     sessionStorage.setItem('spotify_token', ACCESS_TOKEN); sessionStorage.setItem('spotify_token_expires', EXPIRES_AT);
     history.replaceState({},'', window.location.origin + window.location.pathname);
     setStatus('Authenticated');
     showSpinner(false);
     onAuthenticated();
-  }catch(err){setStatus('Token exchange failed: '+err);showSpinner(false)}
+  }catch(err){setStatus('Token exchange failed: '+err);log(err);showSpinner(false)}
 }
 
 // if token already in session
@@ -220,43 +231,59 @@ async function fetchAllSavedTracks(){
   if(!ACCESS_TOKEN) throw new Error('no token');
   const items = [];
   let url = `https://api.spotify.com/v1/me/tracks?limit=${PAGE_LIMIT}`;
+  let attempts = 0;
   while(url){
+    attempts++;
     const resp = await fetch(url, {headers:{Authorization:'Bearer '+ACCESS_TOKEN}});
-    if(resp.status===401){setStatus('Token expired. Please reconnect.');throw new Error('token');}
+    if(resp.status===401){setStatus('Token expired or invalid. Please reconnect.');throw new Error('token');}
+    if(resp.status===429){const wait = (resp.headers.get('Retry-After')||1)*1000; setStatus('Rate-limited, waiting '+(wait/1000)+'s'); await new Promise(r=>setTimeout(r,wait)); continue}
     const j = await resp.json();
     if(j.error){throw new Error(JSON.stringify(j.error))}
+    if(!j.items){break}
     items.push(...j.items);
     url = j.next;
-    // small pause to be polite (avoid hitting rate limits)
-    await new Promise(r=>setTimeout(r, 150));
+    // small pause to be polite
+    await new Promise(r=>setTimeout(r, 100));
+    // safety: avoid infinite loops
+    if(attempts>1000) break;
   }
   return items; // items contain {added_at, track}
 }
 
-// ---------- Fetch artist genres w/cache and rate-friendly batching ----------
-async function fetchArtistGenres(artistId){
-  if(ARTIST_GENRES_CACHE[artistId]) return ARTIST_GENRES_CACHE[artistId];
-  const resp = await fetch(`https://api.spotify.com/v1/artists/${artistId}`,{headers:{Authorization:'Bearer '+ACCESS_TOKEN}});
-  if(resp.status===429){const wait = (resp.headers.get('Retry-After')||1)*1000; await new Promise(r=>setTimeout(r,wait)); return fetchArtistGenres(artistId)}
-  const j = await resp.json();
-  ARTIST_GENRES_CACHE[artistId] = j.genres || [];
-  return ARTIST_GENRES_CACHE[artistId];
+// ---------- Batch fetch artist genres ----------
+async function fetchArtistsGenresBulk(artistIds){
+  // accept array of ids, batch into groups of ARTIST_BATCH_SIZE
+  const uniq = Array.from(new Set(artistIds));
+  const missing = uniq.filter(id=>!ARTIST_GENRES_CACHE[id]);
+  for(let i=0;i<missing.length;i+=ARTIST_BATCH_SIZE){
+    const batch = missing.slice(i,i+ARTIST_BATCH_SIZE);
+    const url = `https://api.spotify.com/v1/artists?ids=${batch.join(',')}`;
+    const resp = await fetch(url,{headers:{Authorization:'Bearer '+ACCESS_TOKEN}});
+    if(resp.status===429){const wait=(resp.headers.get('Retry-After')||1)*1000; await new Promise(r=>setTimeout(r,wait)); i-=ARTIST_BATCH_SIZE; continue}
+    if(resp.status>=400){console.warn('artist batch fetch failed',resp.status); continue}
+    const j = await resp.json();
+    if(j.artists){
+      j.artists.forEach(a=>{ if(a && a.id) ARTIST_GENRES_CACHE[a.id] = a.genres || [] });
+    }
+    await new Promise(r=>setTimeout(r,60)); // gentle pause
+  }
 }
 
-// ---------- Build date-genre map ----------
+// ---------- Build date-genre map (optimized) ----------
 async function buildDateGenreMap(savedItems, onProgress){
   DATE_GENRE_MAP = {};
   ARTIST_GENRES_CACHE = {};
-  const total = savedItems.length; let processed=0;
+  const total = savedItems.length; let processed = 0;
+  // gather artist ids
+  const artistIds = savedItems.map(it=> (it.track.artists && it.track.artists[0]) ? it.track.artists[0].id : null).filter(Boolean);
+  await fetchArtistsGenresBulk(artistIds);
+
   for(const item of savedItems){
     processed++;
     const added_at = item.added_at.split('T')[0];
     const track = item.track;
     const primaryArtist = track.artists && track.artists[0] ? track.artists[0].id : null;
-    let genres = [];
-    if(primaryArtist){
-      try{genres = await fetchArtistGenres(primaryArtist)}catch(e){genres=[]}
-    }
+    const genres = primaryArtist ? (ARTIST_GENRES_CACHE[primaryArtist] || []) : [];
     const bucket = bucketForGenres(genres);
     if(!DATE_GENRE_MAP[added_at]) DATE_GENRE_MAP[added_at] = {counts:{},songs:[]};
     DATE_GENRE_MAP[added_at].songs.push({title:track.name, artists:track.artists.map(a=>a.name).join(', '), bucket});
@@ -276,7 +303,7 @@ function renderLegend(){
   }
 }
 
-// ---------- Calendar rendering (year view broken into months) ----------
+// ---------- Calendar rendering ----------
 function renderCalendarForYear(year){
   calendarEl.innerHTML='';
   const monthsOrder = [...Array(12).keys()];
@@ -288,20 +315,18 @@ function renderCalendarForYear(year){
     const weekdays = document.createElement('div'); weekdays.className='weekdays'; ['S','M','T','W','T','F','S'].forEach(x=>{const w=document.createElement('div'); w.textContent=x; weekdays.appendChild(w)});
     monthDiv.appendChild(weekdays);
     const days = document.createElement('div'); days.className='days';
-    // compute first day of month
     const first = new Date(year,m,1); const startDay = first.getDay();
-    // number of days
     const ndays = new Date(year,m+1,0).getDate();
-    // empty placeholders
     for(let i=0;i<startDay;i++){const e=document.createElement('div'); e.className='day'; e.setAttribute('data-empty','1'); days.appendChild(e)}
     for(let d=1; d<=ndays; d++){
       const dt = `${year}-${('0'+(m+1)).slice(-2)}-${('0'+d).slice(-2)}`;
       const dayEl = document.createElement('div'); dayEl.className='day'; dayEl.setAttribute('data-date',dt);
       if(DATE_GENRE_MAP[dt]){
-        const counts = DATE_GENRE_MAP[dt].counts; // choose dominant
+        const counts = DATE_GENRE_MAP[dt].counts;
         const dominant = Object.keys(counts).sort((a,b)=>counts[b]-counts[a])[0];
         const color = BUCKET_COLORS[dominant] || 'transparent';
-        dayEl.style.background = color; dayEl.title = `${Object.keys(counts).map(k=>k+': '+counts[k]).join('\n')}`;
+        dayEl.style.background = color; dayEl.title = `${Object.keys(counts).map(k=>k+': '+counts[k]).join('
+')}`;
         dayEl.style.border = '1px solid rgba(255,255,255,0.06)';
       }
       dayEl.addEventListener('click', ()=>showDayDetails(dt));
@@ -316,25 +341,23 @@ function renderCalendarForYear(year){
 function showDayDetails(dateStr){
   const ob = DATE_GENRE_MAP[dateStr];
   if(!ob){alert('No songs added on '+dateStr);return}
-  const list = ob.songs.map(s=>`${s.title} — ${s.artists} [${s.bucket}]`).join('\n');
-  alert(`${dateStr}\n\n${list}`);
+  const list = ob.songs.map(s=>`${s.title} — ${s.artists} [${s.bucket}]`).join('
+');
+  alert(`${dateStr}
+
+${list}`);
 }
 
-// ---------- Export PNG (render calendar element to canvas) ----------
+// ---------- Export PNG (simple) ----------
 async function exportCalendarPNG(){
   exportBtn.disabled = true; exportBtn.textContent = 'Exporting...';
   try{
-    // render SVG-less approach: clone calendar, inline styles, draw to canvas
-    const rect = calendarEl.getBoundingClientRect();
-    const scale = 2;
-    const canvas = document.createElement('canvas'); canvas.width = Math.ceil(rect.width*scale); canvas.height = Math.ceil(rect.height*scale);
-    const ctx = canvas.getContext('2d'); ctx.fillStyle = getComputedStyle(document.body).backgroundColor; ctx.fillRect(0,0,canvas.width,canvas.height);
-    // draw each day rect manually
-    // we will reconstruct grid positions identical to DOM layout. Simpler: use html2canvas would be easier but we avoid external libs.
-    // Fallback: prompt the user to take a screenshot if canvas export is not perfect.
-    alert('Export: this built-in exporter is a best-effort attempt. If it fails, take a screenshot of the calendar.');
-    const dataUrl = canvas.toDataURL('image/png');
-    const a = document.createElement('a'); a.href = dataUrl; a.download = 'spotify-genre-calendar.png'; a.click();
+    alert('Export: If you want a higher-quality export I can add html2canvas to the app.');
+    const data = calendarEl.innerHTML;
+    const blob = new Blob([data],{type:'text/html'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'calendar.html'; a.click();
+    URL.revokeObjectURL(url);
   }catch(e){alert('Export failed: '+e)}
   exportBtn.disabled = false; exportBtn.textContent = 'Export PNG';
 }
@@ -349,22 +372,22 @@ async function onAuthenticated(){
 }
 
 async function refreshData(){
-  setStatus('Fetching saved tracks...'); showSpinner(true); refreshBtn.disabled=true;
+  setStatus('Fetching saved tracks...'); showSpinner(true); refreshBtn.disabled=true; log('Starting fetch');
   try{
     const raw = await fetchAllSavedTracks();
-    setStatus(`Fetched ${raw.length} saved tracks — resolving genres...`);
-    await buildDateGenreMap(raw, (p,t)=>{setStatus(`Processing ${p}/${t}`);});
+    setStatus(`Fetched ${raw.length} saved tracks — resolving genres...`); log(`fetched ${raw.length} items`);
+    await buildDateGenreMap(raw, (p,t)=>{setStatus(`Processing ${p}/${t}`); log(`processed ${p}/${t}`)});
     setStatus('Done. Rendering calendar.');
     renderYearOptions();
     const selYear = Number(yearSelect.value) || new Date().getFullYear();
     renderCalendarForYear(selYear);
     showSpinner(false); refreshBtn.disabled=false;
     metaEl.textContent = `Tracks: ${raw.length} • Unique days with additions: ${Object.keys(DATE_GENRE_MAP).length}`;
-  }catch(err){console.error(err); setStatus('Error: '+err.message); showSpinner(false); refreshBtn.disabled=false}
+    log('Completed build');
+  }catch(err){console.error(err); setStatus('Error: '+(err.message||err)); log('Error: '+(err.message||err)); showSpinner(false); refreshBtn.disabled=false}
 }
 
 function renderYearOptions(){
-  // determine min and max year from DATE_GENRE_MAP if available
   const dates = Object.keys(DATE_GENRE_MAP);
   let years = [];
   if(dates.length){
@@ -386,7 +409,6 @@ yearSelect.addEventListener('change', ()=>{const y=Number(yearSelect.value); ren
 // ---------- Startup ----------
 (async function(){
   renderLegend();
-  // try load token from session
   if(tryLoadSessionToken()){
     ACCESS_TOKEN = sessionStorage.getItem('spotify_token'); EXPIRES_AT = Number(sessionStorage.getItem('spotify_token_expires'));
     setStatus('Authenticated (session)'); onAuthenticated();
