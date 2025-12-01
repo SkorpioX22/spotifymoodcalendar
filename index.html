@@ -1,422 +1,102 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Spotify Liked Songs — Genre Calendar</title>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&display=swap" rel="stylesheet">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Spotify Monthly Summary</title>
   <style>
-    :root{--bg:#050505;--panel:#0b0b0b;--muted:#9aa0a6;--white:#e9eef6;--accent:#6cffb5}
-    html,body{height:100%;margin:0;background:var(--bg);color:var(--white);font-family:'JetBrains Mono',monospace}
-    .app{display:flex;flex-direction:column;gap:12px;min-height:100vh;padding:18px}
-    header{display:flex;align-items:center;justify-content:space-between}
-    h1{margin:0;font-size:18px}
-    .controls{display:flex;gap:8px;align-items:center}
-    input,select,button{background:#0b0b0b;border:1px solid #222;padding:8px 10px;color:var(--white);border-radius:8px;font-family:'JetBrains Mono';font-size:13px}
-    button{cursor:pointer}
-    .panel{background:linear-gradient(180deg,#071017 0,#081218 100%);border:1px solid #1c1c1c;padding:12px;border-radius:12px}
-    #status{font-size:13px;color:var(--muted)}
-    #calendar-wrap{display:flex;gap:12px;margin-top:12px;flex-wrap:wrap}
-    #calendar{background:#071018;padding:12px;border-radius:10px;border:1px solid #111;overflow:auto}
-    .legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-    .legend .item{display:flex;gap:6px;align-items:center}
-    .dot{width:16px;height:16px;border-radius:3px}
-    .spinner{width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,0.08);border-top-color:var(--accent);animation:spin 1s linear infinite}
-    @keyframes spin{to{transform:rotate(360deg)}}
-    footer{margin-top:auto;color:var(--muted);font-size:12px}
-
-    /* calendar grid */
-    .month{display:inline-block;margin:6px}
-    .month-title{font-size:12px;text-align:center;margin-bottom:6px}
-    .weekdays{display:grid;grid-template-columns:repeat(7,16px);gap:4px;margin-bottom:4px;color:var(--muted);font-size:11px}
-    .days{display:grid;grid-template-columns:repeat(7,16px);gap:4px}
-    .day{width:16px;height:16px;border:1px solid rgba(255,255,255,0.06);border-radius:3px;background:#070707}
-    .day[data-empty]{background:transparent;border:0}
-    .controls-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    .small{font-size:12px;color:var(--muted)}
-    .export-hint{margin-top:8px;color:var(--muted);font-size:12px}
-    pre.log{white-space:pre-wrap;color:var(--muted);font-size:12px}
+    body {
+      font-family: Arial, sans-serif;
+      background: #121212;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      text-align: center;
+      padding: 20px;
+    }
+    input, button {
+      padding: 10px;
+      margin: 5px;
+      font-size: 1em;
+    }
+    p {
+      font-size: 1.2em;
+      line-height: 1.5em;
+      max-width: 500px;
+    }
+    span.highlight {
+      color: #1DB954;
+      font-weight: bold;
+    }
   </style>
 </head>
 <body>
-  <div class="app">
-    <header>
-      <h1>Spotify Liked Songs — Genre Calendar</h1>
-      <div class="controls-row">
-        <label class="small">Client ID<br><input id="clientId" placeholder="Paste Spotify Client ID"></label>
-        <button id="connectBtn">Connect (PKCE)</button>
-        <button id="disconnectBtn" style="display:none">Disconnect</button>
-      </div>
-    </header>
 
-    <div class="panel">
-      <div style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
-        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-          <div id="status">Not connected</div>
-          <div id="spinner" style="display:none" class="spinner" aria-hidden></div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <label class="small">Year
-            <select id="yearSelect"></select>
-          </label>
-          <button id="refreshBtn" disabled>Refresh Data</button>
-          <button id="exportBtn" disabled>Export PNG</button>
-        </div>
-      </div>
+  <h2>Spotify Last 30 Days Summary</h2>
+  <input type="text" id="tokenInput" placeholder="Enter your Spotify Access Token" size="60">
+  <button onclick="createSummary()">Show Summary</button>
 
-      <div id="meta" style="margin-top:10px"></div>
+  <p id="summary">Enter your token and press "Show Summary".</p>
 
-      <div id="calendar-wrap">
-        <div id="calendar" class="panel" style="min-width:680px"></div>
-        <div style="min-width:220px">
-          <h3 style="margin:6px 0 6px 0;font-size:13px">Legend</h3>
-          <div id="legend" class="legend"></div>
-          <div class="export-hint">Tip: Click a colored day to see songs added that day.</div>
-          <h3 style="margin-top:12px;font-size:13px">Debug</h3>
-          <pre id="log" class="log"></pre>
-        </div>
-      </div>
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <script>
+    const LIMIT = 3;
 
-    </div>
-
-    <footer>
-      This single-file app uses Spotify PKCE flow (no client secret required). It runs entirely in your browser. Make sure the Redirect URI you registered in the Spotify Developer Dashboard matches exactly this page URL (including trailing slash):
-      <br><strong id="myRedirect"></strong>
-    </footer>
-  </div>
-
-<script>
-// ---------- Small improvements made:
-// 1) Batch artist genre requests using /artists?ids= to reduce calls and rate-limit problems
-// 2) Added robust error messages and console/log output
-// 3) Ensure scope includes user-library-read (required)
-// 4) Show progress and metadata clearly
-
-// ---------------- CONFIG ----------------
-const SCOPE = 'user-library-read';
-const PAGE_LIMIT = 50; // Spotify page size for saved tracks
-const ARTIST_BATCH_SIZE = 50; // /artists accepts up to 50 ids
-
-// ---------- PKCE helpers ----------
-function randStr(len=64){const pool='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';let s='';for(let i=0;i<len;i++)s+=pool[Math.floor(Math.random()*pool.length)];return s}
-async function sha256base64url(str){const enc=new TextEncoder().encode(str);const h=await crypto.subtle.digest('SHA-256',enc);const b=String.fromCharCode(...new Uint8Array(h));const base64=btoa(b).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');return base64}
-
-// ---------- tiny genre mapping (edit as needed) ----------
-const GENRE_BUCKETS = {
-  'pop': ['pop','dance pop','k-pop','bubblegum pop','indie pop','synthpop','electropop','pop rock','chill pop','bedroom pop'],
-  'rock': ['rock','indie rock','alternative rock','classic rock','punk','garage rock','hard rock','progressive rock','post-rock','math rock'],
-  'hiphop': ['hip hop','hip-hop','rap','trap','east coast hip hop','conscious hip hop','boom bap'],
-  'electronic': ['electronic','edm','house','techno','electronica','dubstep','drum and bass','trance','deep house','future bass'],
-  'r&b': ['r&b','soul','neo soul','contemporary r&b'],
-  'jazz': ['jazz','smooth jazz','vocal jazz','jazz fusion','bebop'],
-  'classical': ['classical','baroque','romantic era','modern classical','contemporary classical'],
-  'metal': ['metal','heavy metal','black metal','death metal','doom metal','metalcore'],
-  'country': ['country','alt-country','contemporary country'],
-  'other': []
-}
-
-// generate color palette for buckets
-const BUCKETS = Object.keys(GENRE_BUCKETS);
-const BUCKET_COLORS = (function(){
-  const hues = [180,220,280,40,260,150,210,350,25,320];
-  const out={}; BUCKETS.forEach((b,i)=> out[b]=`hsl(${hues[i%hues.length]} 85% 55%)`);
-  return out;
-})();
-
-// ---------- App State ----------
-let ACCESS_TOKEN = null;
-let EXPIRES_AT = 0;
-let PKCE_VERIFIER = null;
-let ARTIST_GENRES_CACHE = {}; // artistId -> genres[]
-let DATE_GENRE_MAP = {}; // yyyy-mm-dd -> {counts: {bucket: n}, songs:[...]} 
-
-// ---------- DOM ----------
-const clientIdInput = document.getElementById('clientId');
-const connectBtn = document.getElementById('connectBtn');
-const disconnectBtn = document.getElementById('disconnectBtn');
-const statusEl = document.getElementById('status');
-const spinner = document.getElementById('spinner');
-const refreshBtn = document.getElementById('refreshBtn');
-const exportBtn = document.getElementById('exportBtn');
-const calendarEl = document.getElementById('calendar');
-const legendEl = document.getElementById('legend');
-const yearSelect = document.getElementById('yearSelect');
-const metaEl = document.getElementById('meta');
-const logEl = document.getElementById('log');
-const myRedirectEl = document.getElementById('myRedirect');
-
-myRedirectEl.textContent = window.location.origin + window.location.pathname;
-
-// ---------- Helpers ----------
-function setStatus(txt){statusEl.textContent = txt; console.log(txt)}
-function showSpinner(on){spinner.style.display = on ? 'inline-block' : 'none'}
-function log(msg){logEl.textContent = msg + '
-' + logEl.textContent}
-
-function bucketForGenres(genres){
-  if(!genres || !genres.length) return 'other';
-  const g = genres.map(x=>x.toLowerCase());
-  for(const bucket of BUCKETS){
-    const candidates = GENRE_BUCKETS[bucket];
-    for(const cand of candidates){
-      if(g.some(x=>x.includes(cand))) return bucket;
+    async function fetchTopArtists(token) {
+      const res = await axios.get(`https://api.spotify.com/v1/me/top/artists?time_range=short_term&limit=${LIMIT}`, {
+        headers: { Authorization: 'Bearer ' + token }
+      });
+      return res.data.items.map(a => a.name);
     }
-  }
-  for(const bucket of BUCKETS){
-    if(g.some(x=>x.includes(bucket))) return bucket;
-  }
-  return 'other';
-}
 
-// ---------- OAuth flow (PKCE) ----------
-connectBtn.addEventListener('click', async ()=>{
-  const clientId = clientIdInput.value.trim();
-  if(!clientId){alert('Paste your Spotify Client ID into the field first.');return}
-  PKCE_VERIFIER = randStr(128);
-  const challenge = await sha256base64url(PKCE_VERIFIER);
-  sessionStorage.setItem('pkce_verifier', PKCE_VERIFIER);
-  sessionStorage.setItem('spotify_client_id', clientId);
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: clientId,
-    scope: SCOPE,
-    redirect_uri: window.location.origin + window.location.pathname,
-    code_challenge_method: 'S256',
-    code_challenge: challenge
-  });
-  // include show_dialog to force consent if you changed scopes
-  params.set('show_dialog','true');
-  window.location = 'https://accounts.spotify.com/authorize?' + params.toString();
-});
-
-disconnectBtn.addEventListener('click', ()=>{sessionStorage.clear();location.reload()});
-
-// after redirect: exchange code for token
-async function handleRedirect(){
-  const url = new URL(window.location.href);
-  const code = url.searchParams.get('code');
-  const error = url.searchParams.get('error');
-  if(error){setStatus('Auth error: '+error);log('Auth error: '+error);return}
-  if(!code) return;
-  setStatus('Finishing authentication...'); showSpinner(true);
-  const verifier = sessionStorage.getItem('pkce_verifier');
-  const clientId = sessionStorage.getItem('spotify_client_id');
-  if(!verifier || !clientId){setStatus('Missing PKCE state. Start flow again.');showSpinner(false);return}
-
-  const body = new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:window.location.origin + window.location.pathname,client_id:clientId,code_verifier:verifier});
-  try{
-    const resp = await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
-    const j = await resp.json();
-    if(j.error){setStatus('Token error: '+(j.error_description||j.error));log(JSON.stringify(j));showSpinner(false);return}
-    ACCESS_TOKEN = j.access_token; EXPIRES_AT = Date.now() + (j.expires_in*1000);
-    sessionStorage.setItem('spotify_token', ACCESS_TOKEN); sessionStorage.setItem('spotify_token_expires', EXPIRES_AT);
-    history.replaceState({},'', window.location.origin + window.location.pathname);
-    setStatus('Authenticated');
-    showSpinner(false);
-    onAuthenticated();
-  }catch(err){setStatus('Token exchange failed: '+err);log(err);showSpinner(false)}
-}
-
-// if token already in session
-function tryLoadSessionToken(){
-  const t = sessionStorage.getItem('spotify_token'); const e = sessionStorage.getItem('spotify_token_expires');
-  if(t && e && Date.now() < Number(e)){
-    ACCESS_TOKEN = t; EXPIRES_AT = Number(e); return true
-  }
-  return false
-}
-
-// ---------- Fetch saved tracks (paged) ----------
-async function fetchAllSavedTracks(){
-  if(!ACCESS_TOKEN) throw new Error('no token');
-  const items = [];
-  let url = `https://api.spotify.com/v1/me/tracks?limit=${PAGE_LIMIT}`;
-  let attempts = 0;
-  while(url){
-    attempts++;
-    const resp = await fetch(url, {headers:{Authorization:'Bearer '+ACCESS_TOKEN}});
-    if(resp.status===401){setStatus('Token expired or invalid. Please reconnect.');throw new Error('token');}
-    if(resp.status===429){const wait = (resp.headers.get('Retry-After')||1)*1000; setStatus('Rate-limited, waiting '+(wait/1000)+'s'); await new Promise(r=>setTimeout(r,wait)); continue}
-    const j = await resp.json();
-    if(j.error){throw new Error(JSON.stringify(j.error))}
-    if(!j.items){break}
-    items.push(...j.items);
-    url = j.next;
-    // small pause to be polite
-    await new Promise(r=>setTimeout(r, 100));
-    // safety: avoid infinite loops
-    if(attempts>1000) break;
-  }
-  return items; // items contain {added_at, track}
-}
-
-// ---------- Batch fetch artist genres ----------
-async function fetchArtistsGenresBulk(artistIds){
-  // accept array of ids, batch into groups of ARTIST_BATCH_SIZE
-  const uniq = Array.from(new Set(artistIds));
-  const missing = uniq.filter(id=>!ARTIST_GENRES_CACHE[id]);
-  for(let i=0;i<missing.length;i+=ARTIST_BATCH_SIZE){
-    const batch = missing.slice(i,i+ARTIST_BATCH_SIZE);
-    const url = `https://api.spotify.com/v1/artists?ids=${batch.join(',')}`;
-    const resp = await fetch(url,{headers:{Authorization:'Bearer '+ACCESS_TOKEN}});
-    if(resp.status===429){const wait=(resp.headers.get('Retry-After')||1)*1000; await new Promise(r=>setTimeout(r,wait)); i-=ARTIST_BATCH_SIZE; continue}
-    if(resp.status>=400){console.warn('artist batch fetch failed',resp.status); continue}
-    const j = await resp.json();
-    if(j.artists){
-      j.artists.forEach(a=>{ if(a && a.id) ARTIST_GENRES_CACHE[a.id] = a.genres || [] });
+    async function fetchTopTracks(token) {
+      const res = await axios.get(`https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=${LIMIT}`, {
+        headers: { Authorization: 'Bearer ' + token }
+      });
+      return res.data.items.map(t => t.name);
     }
-    await new Promise(r=>setTimeout(r,60)); // gentle pause
-  }
-}
 
-// ---------- Build date-genre map (optimized) ----------
-async function buildDateGenreMap(savedItems, onProgress){
-  DATE_GENRE_MAP = {};
-  ARTIST_GENRES_CACHE = {};
-  const total = savedItems.length; let processed = 0;
-  // gather artist ids
-  const artistIds = savedItems.map(it=> (it.track.artists && it.track.artists[0]) ? it.track.artists[0].id : null).filter(Boolean);
-  await fetchArtistsGenresBulk(artistIds);
+    async function fetchTopGenres(token) {
+      const res = await axios.get(`https://api.spotify.com/v1/me/top/artists?time_range=short_term&limit=50`, {
+        headers: { Authorization: 'Bearer ' + token }
+      });
+      const genreCount = {};
+      res.data.items.forEach(artist => {
+        artist.genres.forEach(g => {
+          genreCount[g] = (genreCount[g] || 0) + 1;
+        });
+      });
+      return Object.entries(genreCount)
+                   .sort((a,b)=>b[1]-a[1])
+                   .map(g=>g[0])
+                   .slice(0, LIMIT);
+    }
 
-  for(const item of savedItems){
-    processed++;
-    const added_at = item.added_at.split('T')[0];
-    const track = item.track;
-    const primaryArtist = track.artists && track.artists[0] ? track.artists[0].id : null;
-    const genres = primaryArtist ? (ARTIST_GENRES_CACHE[primaryArtist] || []) : [];
-    const bucket = bucketForGenres(genres);
-    if(!DATE_GENRE_MAP[added_at]) DATE_GENRE_MAP[added_at] = {counts:{},songs:[]};
-    DATE_GENRE_MAP[added_at].songs.push({title:track.name, artists:track.artists.map(a=>a.name).join(', '), bucket});
-    DATE_GENRE_MAP[added_at].counts[bucket] = (DATE_GENRE_MAP[added_at].counts[bucket]||0) + 1;
-    if(onProgress) onProgress(processed, total);
-  }
-}
+    async function createSummary() {
+      const token = document.getElementById('tokenInput').value.trim();
+      const summaryEl = document.getElementById('summary');
 
-// ---------- Render legend ----------
-function renderLegend(){
-  legendEl.innerHTML = '';
-  for(const b of BUCKETS){
-    const it = document.createElement('div'); it.className='item';
-    const dot = document.createElement('div'); dot.className='dot'; dot.style.background = BUCKET_COLORS[b];
-    const label = document.createElement('div'); label.style.fontSize='12px'; label.textContent = b;
-    it.appendChild(dot); it.appendChild(label); legendEl.appendChild(it);
-  }
-}
-
-// ---------- Calendar rendering ----------
-function renderCalendarForYear(year){
-  calendarEl.innerHTML='';
-  const monthsOrder = [...Array(12).keys()];
-  const container = document.createElement('div');
-  for(const m of monthsOrder){
-    const monthDiv = document.createElement('div'); monthDiv.className='month';
-    const title = document.createElement('div'); title.className='month-title'; title.textContent = new Date(year, m, 1).toLocaleString(undefined,{month:'short'});
-    monthDiv.appendChild(title);
-    const weekdays = document.createElement('div'); weekdays.className='weekdays'; ['S','M','T','W','T','F','S'].forEach(x=>{const w=document.createElement('div'); w.textContent=x; weekdays.appendChild(w)});
-    monthDiv.appendChild(weekdays);
-    const days = document.createElement('div'); days.className='days';
-    const first = new Date(year,m,1); const startDay = first.getDay();
-    const ndays = new Date(year,m+1,0).getDate();
-    for(let i=0;i<startDay;i++){const e=document.createElement('div'); e.className='day'; e.setAttribute('data-empty','1'); days.appendChild(e)}
-    for(let d=1; d<=ndays; d++){
-      const dt = `${year}-${('0'+(m+1)).slice(-2)}-${('0'+d).slice(-2)}`;
-      const dayEl = document.createElement('div'); dayEl.className='day'; dayEl.setAttribute('data-date',dt);
-      if(DATE_GENRE_MAP[dt]){
-        const counts = DATE_GENRE_MAP[dt].counts;
-        const dominant = Object.keys(counts).sort((a,b)=>counts[b]-counts[a])[0];
-        const color = BUCKET_COLORS[dominant] || 'transparent';
-        dayEl.style.background = color; dayEl.title = `${Object.keys(counts).map(k=>k+': '+counts[k]).join('
-')}`;
-        dayEl.style.border = '1px solid rgba(255,255,255,0.06)';
+      if (!token) {
+        summaryEl.innerText = "Please enter a valid Spotify access token.";
+        return;
       }
-      dayEl.addEventListener('click', ()=>showDayDetails(dt));
-      days.appendChild(dayEl);
+
+      summaryEl.innerText = "Loading your Spotify summary...";
+
+      try {
+        const artists = await fetchTopArtists(token);
+        const tracks = await fetchTopTracks(token);
+        const genres = await fetchTopGenres(token);
+
+        summaryEl.innerHTML = `Lately, I've been listening to <span class="highlight">${artists.join(', ')}</span>, my favourite songs from this month are <span class="highlight">${tracks.join(', ')}</span>. Some genres I've also been into lately are <span class="highlight">${genres.join(', ')}</span>.`;
+      } catch(err) {
+        console.error(err);
+        summaryEl.innerText = "Failed to fetch Spotify data. Check your token and make sure it has 'user-top-read' scope.";
+      }
     }
-    monthDiv.appendChild(days);
-    container.appendChild(monthDiv);
-  }
-  calendarEl.appendChild(container);
-}
-
-function showDayDetails(dateStr){
-  const ob = DATE_GENRE_MAP[dateStr];
-  if(!ob){alert('No songs added on '+dateStr);return}
-  const list = ob.songs.map(s=>`${s.title} — ${s.artists} [${s.bucket}]`).join('
-');
-  alert(`${dateStr}
-
-${list}`);
-}
-
-// ---------- Export PNG (simple) ----------
-async function exportCalendarPNG(){
-  exportBtn.disabled = true; exportBtn.textContent = 'Exporting...';
-  try{
-    alert('Export: If you want a higher-quality export I can add html2canvas to the app.');
-    const data = calendarEl.innerHTML;
-    const blob = new Blob([data],{type:'text/html'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'calendar.html'; a.click();
-    URL.revokeObjectURL(url);
-  }catch(e){alert('Export failed: '+e)}
-  exportBtn.disabled = false; exportBtn.textContent = 'Export PNG';
-}
-
-// ---------- Main flow after auth ----------
-async function onAuthenticated(){
-  renderLegend();
-  renderYearOptions();
-  refreshBtn.disabled = false; exportBtn.disabled = false; disconnectBtn.style.display='inline-block';
-  clientIdInput.disabled = true; connectBtn.style.display='none';
-  await refreshData();
-}
-
-async function refreshData(){
-  setStatus('Fetching saved tracks...'); showSpinner(true); refreshBtn.disabled=true; log('Starting fetch');
-  try{
-    const raw = await fetchAllSavedTracks();
-    setStatus(`Fetched ${raw.length} saved tracks — resolving genres...`); log(`fetched ${raw.length} items`);
-    await buildDateGenreMap(raw, (p,t)=>{setStatus(`Processing ${p}/${t}`); log(`processed ${p}/${t}`)});
-    setStatus('Done. Rendering calendar.');
-    renderYearOptions();
-    const selYear = Number(yearSelect.value) || new Date().getFullYear();
-    renderCalendarForYear(selYear);
-    showSpinner(false); refreshBtn.disabled=false;
-    metaEl.textContent = `Tracks: ${raw.length} • Unique days with additions: ${Object.keys(DATE_GENRE_MAP).length}`;
-    log('Completed build');
-  }catch(err){console.error(err); setStatus('Error: '+(err.message||err)); log('Error: '+(err.message||err)); showSpinner(false); refreshBtn.disabled=false}
-}
-
-function renderYearOptions(){
-  const dates = Object.keys(DATE_GENRE_MAP);
-  let years = [];
-  if(dates.length){
-    const ys = dates.map(d=>Number(d.slice(0,4)));
-    const min = Math.min(...ys); const max = Math.max(...ys);
-    for(let y=min;y<=max;y++) years.push(y);
-  } else {
-    const thisY = new Date().getFullYear(); years = [thisY-2,thisY-1,thisY];
-  }
-  yearSelect.innerHTML = '';
-  years.sort((a,b)=>b-a).forEach(y=>{const op=document.createElement('option');op.value=y;op.textContent=y;yearSelect.appendChild(op)});
-}
-
-// ---------- Event wiring ----------
-refreshBtn.addEventListener('click', ()=>refreshData());
-exportBtn.addEventListener('click', ()=>exportCalendarPNG());
-yearSelect.addEventListener('change', ()=>{const y=Number(yearSelect.value); renderCalendarForYear(y)});
-
-// ---------- Startup ----------
-(async function(){
-  renderLegend();
-  if(tryLoadSessionToken()){
-    ACCESS_TOKEN = sessionStorage.getItem('spotify_token'); EXPIRES_AT = Number(sessionStorage.getItem('spotify_token_expires'));
-    setStatus('Authenticated (session)'); onAuthenticated();
-  } else {
-    await handleRedirect();
-  }
-})();
-
-</script>
+  </script>
 </body>
 </html>
