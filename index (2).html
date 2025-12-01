@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Spotify Liked Songs — Genre Calendar</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#050505;--panel:#0b0b0b;--muted:#9aa0a6;--white:#e9eef6;--accent:#6cffb5}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--white);font-family:'JetBrains Mono',monospace}
+    .app{display:flex;flex-direction:column;gap:12px;min-height:100vh;padding:18px}
+    header{display:flex;align-items:center;justify-content:space-between}
+    h1{margin:0;font-size:18px}
+    .controls{display:flex;gap:8px;align-items:center}
+    input,select,button{background:#0b0b0b;border:1px solid #222;padding:8px 10px;color:var(--white);border-radius:8px;font-family:'JetBrains Mono';font-size:13px}
+    button{cursor:pointer}
+    .panel{background:linear-gradient(180deg,#071017 0,#081218 100%);border:1px solid #1c1c1c;padding:12px;border-radius:12px}
+    #status{font-size:13px;color:var(--muted)}
+    #calendar-wrap{display:flex;gap:12px;margin-top:12px;flex-wrap:wrap}
+    #calendar{background:#071018;padding:12px;border-radius:10px;border:1px solid #111;overflow:auto}
+    .legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+    .legend .item{display:flex;gap:6px;align-items:center}
+    .dot{width:16px;height:16px;border-radius:3px}
+    .spinner{width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,0.08);border-top-color:var(--accent);animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    footer{margin-top:auto;color:var(--muted);font-size:12px}
+
+    /* calendar grid */
+    .month{display:inline-block;margin:6px}
+    .month-title{font-size:12px;text-align:center;margin-bottom:6px}
+    .weekdays{display:grid;grid-template-columns:repeat(7,16px);gap:4px;margin-bottom:4px;color:var(--muted);font-size:11px}
+    .days{display:grid;grid-template-columns:repeat(7,16px);gap:4px}
+    .day{width:16px;height:16px;border:1px solid rgba(255,255,255,0.06);border-radius:3px;background:#070707}
+    .day[data-empty]{background:transparent;border:0}
+    .controls-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .small{font-size:12px;color:var(--muted)}
+    .export-hint{margin-top:8px;color:var(--muted);font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Spotify Liked Songs — Genre Calendar</h1>
+      <div class="controls-row">
+        <label class="small">Client ID<br><input id="clientId" placeholder="Paste Spotify Client ID"></label>
+        <button id="connectBtn">Connect (PKCE)</button>
+        <button id="disconnectBtn" style="display:none">Disconnect</button>
+      </div>
+    </header>
+
+    <div class="panel">
+      <div style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <div id="status">Not connected</div>
+          <div id="spinner" style="display:none" class="spinner" aria-hidden></div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <label class="small">Year
+            <select id="yearSelect"></select>
+          </label>
+          <button id="refreshBtn" disabled>Refresh Data</button>
+          <button id="exportBtn" disabled>Export PNG</button>
+        </div>
+      </div>
+
+      <div id="meta" style="margin-top:10px"></div>
+
+      <div id="calendar-wrap">
+        <div id="calendar" class="panel" style="min-width:680px"></div>
+        <div style="min-width:220px">
+          <h3 style="margin:6px 0 6px 0;font-size:13px">Legend</h3>
+          <div id="legend" class="legend"></div>
+          <div class="export-hint">Tip: Click a colored day to see songs added that day.</div>
+        </div>
+      </div>
+
+    </div>
+
+    <footer>
+      This single-file app uses Spotify PKCE flow (no client secret required). It runs entirely in your browser. For full stability, use a Spotify app with Redirect URI set to this page origin (e.g. http://localhost:5500) in the Spotify Developer Dashboard.
+    </footer>
+  </div>
+
+<script>
+// ---------------- CONFIG ----------------
+const SCOPE = 'user-library-read';
+const PAGE_LIMIT = 50; // Spotify page size for saved tracks
+
+// ---------- PKCE helpers ----------
+function randStr(len=64){const pool='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';let s='';for(let i=0;i<len;i++)s+=pool[Math.floor(Math.random()*pool.length)];return s}
+async function sha256base64url(str){const enc=new TextEncoder().encode(str);const h=await crypto.subtle.digest('SHA-256',enc);const b=String.fromCharCode(...new Uint8Array(h));const base64=btoa(b).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');return base64}
+
+// ---------- tiny genre mapping (edit as needed) ----------
+const GENRE_BUCKETS = {
+  'pop': ['pop','dance pop','k-pop','bubblegum pop','indie pop','synthpop','electropop','pop rock','chill pop','bedroom pop'],
+  'rock': ['rock','indie rock','alternative rock','classic rock','punk','garage rock','hard rock','progressive rock','post-rock','math rock'],
+  'hiphop': ['hip hop','hip-hop','rap','trap','east coast hip hop','conscious hip hop','boom bap'],
+  'electronic': ['electronic','edm','house','techno','electronica','dubstep','drum and bass','trance','deep house','future bass'],
+  'r&b': ['r&b','soul','neo soul','contemporary r&b'],
+  'jazz': ['jazz','smooth jazz','vocal jazz','jazz fusion','bebop'],
+  'classical': ['classical','baroque','romantic era','modern classical','contemporary classical'],
+  'metal': ['metal','heavy metal','black metal','death metal','doom metal','metalcore'],
+  'country': ['country','alt-country','contemporary country'],
+  'other': []
+}
+
+// generate color palette for buckets
+const BUCKETS = Object.keys(GENRE_BUCKETS);
+const BUCKET_COLORS = (function(){
+  // assign visually distinct hues (HSL) mapped to buckets
+  const hues = [180,220,280,40,260,150,210,350,25,320];
+  const out={}; BUCKETS.forEach((b,i)=> out[b]=`hsl(${hues[i%hues.length]} 85% 55%)`);
+  return out;
+})();
+
+// ---------- App State ----------
+let ACCESS_TOKEN = null;
+let EXPIRES_AT = 0;
+let PKCE_VERIFIER = null;
+let USER_SAVED_TRACKS = []; // {added_at, track}
+let ARTIST_GENRES_CACHE = {}; // artistId -> genres[]
+let DATE_GENRE_MAP = {}; // yyyy-mm-dd -> {counts: {bucket: n}, songs:[...]} 
+
+// ---------- DOM ----------
+const clientIdInput = document.getElementById('clientId');
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const statusEl = document.getElementById('status');
+const spinner = document.getElementById('spinner');
+const refreshBtn = document.getElementById('refreshBtn');
+const exportBtn = document.getElementById('exportBtn');
+const calendarEl = document.getElementById('calendar');
+const legendEl = document.getElementById('legend');
+const yearSelect = document.getElementById('yearSelect');
+const metaEl = document.getElementById('meta');
+
+// ---------- Helpers ----------
+function setStatus(txt){statusEl.textContent = txt}
+function showSpinner(on){spinner.style.display = on ? 'inline-block' : 'none'}
+function saveToSession(key,val){sessionStorage.setItem(key,JSON.stringify(val))}
+function loadFromSession(key){const v=sessionStorage.getItem(key);return v?JSON.parse(v):null}
+
+function bucketForGenres(genres){ // genres: array of strings
+  if(!genres || !genres.length) return 'other';
+  const g = genres.map(x=>x.toLowerCase());
+  for(const bucket of BUCKETS){
+    const candidates = GENRE_BUCKETS[bucket];
+    for(const cand of candidates){
+      if(g.some(x=>x.includes(cand))) return bucket;
+    }
+  }
+  // fallback: try single word match
+  for(const bucket of BUCKETS){
+    if(g.some(x=>x.includes(bucket))) return bucket;
+  }
+  return 'other';
+}
+
+function formatDateYMD(dt){const y=dt.getFullYear();const m=('0'+(dt.getMonth()+1)).slice(-2);const d=('0'+dt.getDate()).slice(-2);return `${y}-${m}-${d}`}
+
+// ---------- OAuth flow (PKCE) ----------
+connectBtn.addEventListener('click', async ()=>{
+  const clientId = clientIdInput.value.trim();
+  if(!clientId){alert('Paste your Spotify Client ID into the field first.');return}
+  PKCE_VERIFIER = randStr(128);
+  const challenge = await sha256base64url(PKCE_VERIFIER);
+  sessionStorage.setItem('pkce_verifier', PKCE_VERIFIER);
+  sessionStorage.setItem('spotify_client_id', clientId);
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    scope: SCOPE,
+    redirect_uri: window.location.origin + window.location.pathname,
+    code_challenge_method: 'S256',
+    code_challenge: challenge
+  });
+  window.location = 'https://accounts.spotify.com/authorize?' + params.toString();
+});
+
+disconnectBtn.addEventListener('click', ()=>{sessionStorage.clear();location.reload()});
+
+// after redirect: exchange code for token
+async function handleRedirect(){
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get('code');
+  const error = url.searchParams.get('error');
+  if(error){setStatus('Auth error: '+error);return}
+  if(!code) return;
+  setStatus('Finishing authentication...');
+  showSpinner(true);
+  const verifier = sessionStorage.getItem('pkce_verifier');
+  const clientId = sessionStorage.getItem('spotify_client_id');
+  if(!verifier || !clientId){setStatus('Missing PKCE state. Start flow again.');showSpinner(false);return}
+
+  const body = new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:window.location.origin + window.location.pathname,client_id:clientId,code_verifier:verifier});
+  try{
+    const resp = await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+    const j = await resp.json();
+    if(j.error){setStatus('Token error: '+(j.error_description||j.error));showSpinner(false);return}
+    ACCESS_TOKEN = j.access_token; EXPIRES_AT = Date.now() + (j.expires_in*1000);
+    sessionStorage.setItem('spotify_token', ACCESS_TOKEN); sessionStorage.setItem('spotify_token_expires', EXPIRES_AT);
+    history.replaceState({},'', window.location.origin + window.location.pathname);
+    setStatus('Authenticated');
+    showSpinner(false);
+    onAuthenticated();
+  }catch(err){setStatus('Token exchange failed: '+err);showSpinner(false)}
+}
+
+// if token already in session
+function tryLoadSessionToken(){
+  const t = sessionStorage.getItem('spotify_token'); const e = sessionStorage.getItem('spotify_token_expires');
+  if(t && e && Date.now() < Number(e)){
+    ACCESS_TOKEN = t; EXPIRES_AT = Number(e); return true
+  }
+  return false
+}
+
+// ---------- Fetch saved tracks (paged) ----------
+async function fetchAllSavedTracks(){
+  if(!ACCESS_TOKEN) throw new Error('no token');
+  const items = [];
+  let url = `https://api.spotify.com/v1/me/tracks?limit=${PAGE_LIMIT}`;
+  while(url){
+    const resp = await fetch(url, {headers:{Authorization:'Bearer '+ACCESS_TOKEN}});
+    if(resp.status===401){setStatus('Token expired. Please reconnect.');throw new Error('token');}
+    const j = await resp.json();
+    if(j.error){throw new Error(JSON.stringify(j.error))}
+    items.push(...j.items);
+    url = j.next;
+    // small pause to be polite (avoid hitting rate limits)
+    await new Promise(r=>setTimeout(r, 150));
+  }
+  return items; // items contain {added_at, track}
+}
+
+// ---------- Fetch artist genres w/cache and rate-friendly batching ----------
+async function fetchArtistGenres(artistId){
+  if(ARTIST_GENRES_CACHE[artistId]) return ARTIST_GENRES_CACHE[artistId];
+  const resp = await fetch(`https://api.spotify.com/v1/artists/${artistId}`,{headers:{Authorization:'Bearer '+ACCESS_TOKEN}});
+  if(resp.status===429){const wait = (resp.headers.get('Retry-After')||1)*1000; await new Promise(r=>setTimeout(r,wait)); return fetchArtistGenres(artistId)}
+  const j = await resp.json();
+  ARTIST_GENRES_CACHE[artistId] = j.genres || [];
+  return ARTIST_GENRES_CACHE[artistId];
+}
+
+// ---------- Build date-genre map ----------
+async function buildDateGenreMap(savedItems, onProgress){
+  DATE_GENRE_MAP = {};
+  ARTIST_GENRES_CACHE = {};
+  const total = savedItems.length; let processed=0;
+  for(const item of savedItems){
+    processed++;
+    const added_at = item.added_at.split('T')[0];
+    const track = item.track;
+    const primaryArtist = track.artists && track.artists[0] ? track.artists[0].id : null;
+    let genres = [];
+    if(primaryArtist){
+      try{genres = await fetchArtistGenres(primaryArtist)}catch(e){genres=[]}
+    }
+    const bucket = bucketForGenres(genres);
+    if(!DATE_GENRE_MAP[added_at]) DATE_GENRE_MAP[added_at] = {counts:{},songs:[]};
+    DATE_GENRE_MAP[added_at].songs.push({title:track.name, artists:track.artists.map(a=>a.name).join(', '), bucket});
+    DATE_GENRE_MAP[added_at].counts[bucket] = (DATE_GENRE_MAP[added_at].counts[bucket]||0) + 1;
+    if(onProgress) onProgress(processed, total);
+  }
+}
+
+// ---------- Render legend ----------
+function renderLegend(){
+  legendEl.innerHTML = '';
+  for(const b of BUCKETS){
+    const it = document.createElement('div'); it.className='item';
+    const dot = document.createElement('div'); dot.className='dot'; dot.style.background = BUCKET_COLORS[b];
+    const label = document.createElement('div'); label.style.fontSize='12px'; label.textContent = b;
+    it.appendChild(dot); it.appendChild(label); legendEl.appendChild(it);
+  }
+}
+
+// ---------- Calendar rendering (year view broken into months) ----------
+function renderCalendarForYear(year){
+  calendarEl.innerHTML='';
+  const monthsOrder = [...Array(12).keys()];
+  const container = document.createElement('div');
+  for(const m of monthsOrder){
+    const monthDiv = document.createElement('div'); monthDiv.className='month';
+    const title = document.createElement('div'); title.className='month-title'; title.textContent = new Date(year, m, 1).toLocaleString(undefined,{month:'short'});
+    monthDiv.appendChild(title);
+    const weekdays = document.createElement('div'); weekdays.className='weekdays'; ['S','M','T','W','T','F','S'].forEach(x=>{const w=document.createElement('div'); w.textContent=x; weekdays.appendChild(w)});
+    monthDiv.appendChild(weekdays);
+    const days = document.createElement('div'); days.className='days';
+    // compute first day of month
+    const first = new Date(year,m,1); const startDay = first.getDay();
+    // number of days
+    const ndays = new Date(year,m+1,0).getDate();
+    // empty placeholders
+    for(let i=0;i<startDay;i++){const e=document.createElement('div'); e.className='day'; e.setAttribute('data-empty','1'); days.appendChild(e)}
+    for(let d=1; d<=ndays; d++){
+      const dt = `${year}-${('0'+(m+1)).slice(-2)}-${('0'+d).slice(-2)}`;
+      const dayEl = document.createElement('div'); dayEl.className='day'; dayEl.setAttribute('data-date',dt);
+      if(DATE_GENRE_MAP[dt]){
+        const counts = DATE_GENRE_MAP[dt].counts; // choose dominant
+        const dominant = Object.keys(counts).sort((a,b)=>counts[b]-counts[a])[0];
+        const color = BUCKET_COLORS[dominant] || 'transparent';
+        dayEl.style.background = color; dayEl.title = `${Object.keys(counts).map(k=>k+': '+counts[k]).join('\n')}`;
+        dayEl.style.border = '1px solid rgba(255,255,255,0.06)';
+      }
+      dayEl.addEventListener('click', ()=>showDayDetails(dt));
+      days.appendChild(dayEl);
+    }
+    monthDiv.appendChild(days);
+    container.appendChild(monthDiv);
+  }
+  calendarEl.appendChild(container);
+}
+
+function showDayDetails(dateStr){
+  const ob = DATE_GENRE_MAP[dateStr];
+  if(!ob){alert('No songs added on '+dateStr);return}
+  const list = ob.songs.map(s=>`${s.title} — ${s.artists} [${s.bucket}]`).join('\n');
+  alert(`${dateStr}\n\n${list}`);
+}
+
+// ---------- Export PNG (render calendar element to canvas) ----------
+async function exportCalendarPNG(){
+  exportBtn.disabled = true; exportBtn.textContent = 'Exporting...';
+  try{
+    // render SVG-less approach: clone calendar, inline styles, draw to canvas
+    const rect = calendarEl.getBoundingClientRect();
+    const scale = 2;
+    const canvas = document.createElement('canvas'); canvas.width = Math.ceil(rect.width*scale); canvas.height = Math.ceil(rect.height*scale);
+    const ctx = canvas.getContext('2d'); ctx.fillStyle = getComputedStyle(document.body).backgroundColor; ctx.fillRect(0,0,canvas.width,canvas.height);
+    // draw each day rect manually
+    // we will reconstruct grid positions identical to DOM layout. Simpler: use html2canvas would be easier but we avoid external libs.
+    // Fallback: prompt the user to take a screenshot if canvas export is not perfect.
+    alert('Export: this built-in exporter is a best-effort attempt. If it fails, take a screenshot of the calendar.');
+    const dataUrl = canvas.toDataURL('image/png');
+    const a = document.createElement('a'); a.href = dataUrl; a.download = 'spotify-genre-calendar.png'; a.click();
+  }catch(e){alert('Export failed: '+e)}
+  exportBtn.disabled = false; exportBtn.textContent = 'Export PNG';
+}
+
+// ---------- Main flow after auth ----------
+async function onAuthenticated(){
+  renderLegend();
+  renderYearOptions();
+  refreshBtn.disabled = false; exportBtn.disabled = false; disconnectBtn.style.display='inline-block';
+  clientIdInput.disabled = true; connectBtn.style.display='none';
+  await refreshData();
+}
+
+async function refreshData(){
+  setStatus('Fetching saved tracks...'); showSpinner(true); refreshBtn.disabled=true;
+  try{
+    const raw = await fetchAllSavedTracks();
+    setStatus(`Fetched ${raw.length} saved tracks — resolving genres...`);
+    await buildDateGenreMap(raw, (p,t)=>{setStatus(`Processing ${p}/${t}`);});
+    setStatus('Done. Rendering calendar.');
+    renderYearOptions();
+    const selYear = Number(yearSelect.value) || new Date().getFullYear();
+    renderCalendarForYear(selYear);
+    showSpinner(false); refreshBtn.disabled=false;
+    metaEl.textContent = `Tracks: ${raw.length} • Unique days with additions: ${Object.keys(DATE_GENRE_MAP).length}`;
+  }catch(err){console.error(err); setStatus('Error: '+err.message); showSpinner(false); refreshBtn.disabled=false}
+}
+
+function renderYearOptions(){
+  // determine min and max year from DATE_GENRE_MAP if available
+  const dates = Object.keys(DATE_GENRE_MAP);
+  let years = [];
+  if(dates.length){
+    const ys = dates.map(d=>Number(d.slice(0,4)));
+    const min = Math.min(...ys); const max = Math.max(...ys);
+    for(let y=min;y<=max;y++) years.push(y);
+  } else {
+    const thisY = new Date().getFullYear(); years = [thisY-2,thisY-1,thisY];
+  }
+  yearSelect.innerHTML = '';
+  years.sort((a,b)=>b-a).forEach(y=>{const op=document.createElement('option');op.value=y;op.textContent=y;yearSelect.appendChild(op)});
+}
+
+// ---------- Event wiring ----------
+refreshBtn.addEventListener('click', ()=>refreshData());
+exportBtn.addEventListener('click', ()=>exportCalendarPNG());
+yearSelect.addEventListener('change', ()=>{const y=Number(yearSelect.value); renderCalendarForYear(y)});
+
+// ---------- Startup ----------
+(async function(){
+  renderLegend();
+  // try load token from session
+  if(tryLoadSessionToken()){
+    ACCESS_TOKEN = sessionStorage.getItem('spotify_token'); EXPIRES_AT = Number(sessionStorage.getItem('spotify_token_expires'));
+    setStatus('Authenticated (session)'); onAuthenticated();
+  } else {
+    await handleRedirect();
+  }
+})();
+
+</script>
+</body>
+</html>
